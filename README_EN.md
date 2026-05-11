@@ -23,7 +23,7 @@ A powerful backup and restore tool for TDengine (Taos Time-Series Database), sup
 ### Build
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/zhenghan008/taosBackup.git
 cd taosBackup
 go build -o taosBackup
 ```
