@@ -195,15 +195,14 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 		var producerWg sync.WaitGroup
 		if tableType == 0 {
 			//Retrieve all sub-tables containing data
-			rows, err := db.QueryContext(ctx, "SELECT tbname, COUNT(*) as record_count FROM ? GROUP BY tbname HAVING COUNT(*) > 0 ORDER BY record_count DESC", tableName)
+			rows, err := db.QueryContext(ctx, "SELECT tbname FROM ?", tableName)
 			if err != nil {
 				return fmt.Errorf("ExportDataByTable query sub-tables failed: %w", err)
 			}
 			defer rows.Close()
 			for rows.Next() {
 				var subTableName string
-				var recordCount int
-				if err := rows.Scan(&subTableName, &recordCount); err != nil {
+				if err := rows.Scan(&subTableName); err != nil {
 					log.Errorw("ExportDataByTable row scan error", "error", err)
 					continue
 				}
@@ -236,43 +235,26 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 			}
 
 		} else {
-			rows, err := db.QueryContext(ctx, "SELECT COUNT(*) as record_count FROM ?", tableName)
+			tasks, err := buildFetchTasks(ctx, db, tableName, tableName, tableType, isFull, log)
 			if err != nil {
-				return fmt.Errorf("ExportDataByTable query table failed: %w", err)
+				log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
 			}
-			defer rows.Close()
-			for rows.Next() {
-				var recordCount int
-				if err := rows.Scan(&recordCount); err != nil {
-					log.Errorw("ExportDataByTable row scan error", "error", err)
-					continue
-				}
-				if recordCount > 0 {
-					tasks, err := buildFetchTasks(ctx, db, tableName, tableName, tableType, isFull, log)
-					if err != nil {
-						log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
-						continue
+			for _, taskRange := range tasks {
+				tr := taskRange
+				tb := tableName
+				producerWg.Add(1)
+				err := queryPool.Submit(func() {
+					defer producerWg.Done()
+					if ctx.Err() != nil {
+						return
 					}
-					for _, taskRange := range tasks {
-						tr := taskRange
-						tb := tableName
-						producerWg.Add(1)
-						err := queryPool.Submit(func() {
-							defer producerWg.Done()
-							if ctx.Err() != nil {
-								return
-							}
-							if err := fetchDataInBatches(ctx, db, tb, tb, tableType, tr.Start, tr.End, batchChan); err != nil {
-								log.Errorw("fetch data failed", "tb", tb, "error", err)
-							}
-						})
-						if err != nil {
-							producerWg.Done()
-							log.Errorw("ExportDataByTable submit task failed", "error", err, "taskid", tb+"_"+strconv.FormatInt(tr.Start, 10)+"-"+strconv.FormatInt(tr.End, 10))
-
-						}
-
+					if err := fetchDataInBatches(ctx, db, tb, tb, tableType, tr.Start, tr.End, batchChan); err != nil {
+						log.Errorw("fetch data failed", "tb", tb, "error", err)
 					}
+				})
+				if err != nil {
+					producerWg.Done()
+					log.Errorw("ExportDataByTable submit task failed", "error", err, "taskid", tb+"_"+strconv.FormatInt(tr.Start, 10)+"-"+strconv.FormatInt(tr.End, 10))
 
 				}
 
