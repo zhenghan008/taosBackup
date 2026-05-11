@@ -61,118 +61,254 @@ var (
 )
 
 // ExportAllTables Export all data
-func ExportAllTables(db *sql.DB, limitCores int, workPath string, isFull bool, toCsvRows int, log *zap.SugaredLogger) error {
-	_, ctx := errgroup.WithContext(context.Background())
+func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string, isFull bool, toCsvRows int, specifiedTables map[string]int8, log *zap.SugaredLogger) error {
+	eg, ctx := errgroup.WithContext(context.Background())
+	start := time.Now()
 	globalQueryPool, _ := ants.NewPool(limitCores*4, ants.WithPreAlloc(true))
 	defer globalQueryPool.Release()
 	stableWorkerPool, _ := ants.NewPool(limitCores, ants.WithPreAlloc(true))
 	defer stableWorkerPool.Release()
+	otableWorkerPool, _ := ants.NewPool(limitCores, ants.WithPreAlloc(true))
+	defer otableWorkerPool.Release()
 	var stableWg sync.WaitGroup
-	rows, err := db.QueryContext(ctx, "show STABLES")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
-			log.Errorw("ExportAllTables row scan error", "error", err, "stables", tableName)
-			continue
-		}
-		stableWg.Add(1)
-		err := stableWorkerPool.Submit(func() {
-			defer stableWg.Done()
-			if ctx.Err() != nil {
-				return
-			}
-			err := ExportTablesByStable(ctx, db, globalQueryPool, tableName, workPath, isFull, toCsvRows, log)
+	var otableWg sync.WaitGroup
+	switch {
+	case len(specifiedTables) != 0:
+		for tb, ty := range specifiedTables {
+			stableWg.Add(1)
+			err := stableWorkerPool.Submit(func() {
+				defer stableWg.Done()
+				if ctx.Err() != nil {
+					return
+				}
+				err := ExportDataByTable(ctx, db, globalQueryPool, tb, ty, workPath, isFull, toCsvRows, log)
+				if err != nil {
+					log.Errorw("ExportAllTables export error", "error", err, "stables", tb)
+					return
+				}
+			})
 			if err != nil {
-				log.Errorw("ExportAllTables export error", "error", err, "stables", tableName)
-				return
+				stableWg.Done()
+				log.Errorw("ExportAllTables submit task failed", "error", err, "taskid", tb)
+				continue
 			}
-		})
-
-		if err != nil {
-			stableWg.Done()
-			log.Errorw("ExportAllTables submit task failed", "error", err, "taskid", tableName)
-			continue
+			log.Infow("ExportAllTables tasks submit successfully", "taskid", tb)
 		}
-		log.Infow("ExportAllTables tasks submit successfully", "taskid", tableName)
+		stableWg.Wait()
+	default:
+		for i := 0; i < 2; i++ {
+			eg.Go(func() error {
+				if i == 0 {
+					rows, err := db.QueryContext(ctx, "show STABLES")
+					if err != nil {
+						return err
+					}
+					defer rows.Close()
+					for rows.Next() {
+						var tableName string
+						if err := rows.Scan(&tableName); err != nil {
+							log.Errorw("ExportAllTables row scan error", "error", err, "stables", tableName)
+							continue
+						}
+						stableWg.Add(1)
+						err := stableWorkerPool.Submit(func() {
+							defer stableWg.Done()
+							if ctx.Err() != nil {
+								return
+							}
+							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(0), workPath, isFull, toCsvRows, log)
+							if err != nil {
+								log.Errorw("ExportAllTables export error", "error", err, "stables", tableName)
+							}
+						})
+
+						if err != nil {
+							stableWg.Done()
+							log.Errorw("ExportAllTables submit task failed", "error", err, "taskid", tableName)
+							continue
+						}
+						log.Infow("ExportAllTables tasks submit successfully", "taskid", tableName)
+
+					}
+					stableWg.Wait()
+				} else {
+					rows, err := db.QueryContext(ctx, "SELECT table_name FROM INFORMATION_SCHEMA.INS_TABLES  WHERE DB_NAME = '?' AND type = 'NORMAL_TABLE'", dbName)
+					if err != nil {
+						return err
+					}
+					defer rows.Close()
+					for rows.Next() {
+						var tableName string
+						if err := rows.Scan(&tableName); err != nil {
+							log.Errorw("ExportAllTables row scan error", "error", err, "stables", tableName)
+							continue
+						}
+						otableWg.Add(1)
+						err := otableWorkerPool.Submit(func() {
+							defer otableWg.Done()
+							if ctx.Err() != nil {
+								return
+							}
+							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(1), workPath, isFull, toCsvRows, log)
+							if err != nil {
+								log.Errorw("ExportAllTables export error", "error", err, "stables", tableName)
+							}
+						})
+
+						if err != nil {
+							otableWg.Done()
+							log.Errorw("ExportAllTables submit task failed", "error", err, "taskid", tableName)
+							continue
+						}
+						log.Infow("ExportAllTables tasks submit successfully", "taskid", tableName)
+
+					}
+					otableWg.Wait()
+				}
+
+				return nil
+			})
+
+		}
+		if err := eg.Wait(); err != nil {
+			log.Errorw("ExportAllTables failed!", "error", err, "cost", time.Since(start))
+			return err
+		}
 
 	}
-	stableWg.Wait()
+	log.Infof("ExportAllTables completed, total time elapsed: %v", time.Since(start))
 	return nil
+
 }
 
-func ExportTablesByStable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, stableName string, workPath string, isFull bool, toCsvRows int, log *zap.SugaredLogger) error {
+func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, tableName string, tableType int8, workPath string, isFull bool, toCsvRows int, log *zap.SugaredLogger) error {
 	batchChan := make(chan RowBatch, batchSize/10)
 	eg, _ := errgroup.WithContext(context.Background())
 
 	// Start concurrent file writer (Consumer)
 	eg.Go(func() error {
-		return sequentialFileWriterRoutine(ctx, batchChan, workPath, stableName, toCsvRows, log)
+		return sequentialFileWriterRoutine(ctx, batchChan, workPath, tableName, toCsvRows, log)
 	})
 
 	eg.Go(func() error {
 		defer close(batchChan)
-		//Retrieve all sub-tables containing data
-		rows, err := db.QueryContext(ctx, "SELECT tbname, COUNT(*) as record_count FROM ? GROUP BY tbname HAVING COUNT(*) > 0 ORDER BY record_count DESC", stableName)
-		if err != nil {
-			return fmt.Errorf("ExportTablesByStable query sub-tables failed: %w", err)
-		}
-		defer rows.Close()
 		var producerWg sync.WaitGroup
-		for rows.Next() {
-			var tableName string
-			var recordCount int
-			if err := rows.Scan(&tableName, &recordCount); err != nil {
-				log.Errorw("ExportTablesByStable row scan error", "error", err)
-				continue
-			}
-			tasks, err := buildFetchTasks(ctx, db, tableName, stableName, isFull, log)
+		if tableType == 0 {
+			//Retrieve all sub-tables containing data
+			rows, err := db.QueryContext(ctx, "SELECT tbname, COUNT(*) as record_count FROM ? GROUP BY tbname HAVING COUNT(*) > 0 ORDER BY record_count DESC", tableName)
 			if err != nil {
-				log.Errorw("ExportTablesByStable build tasks failed: %w", "error", err)
-				continue
+				return fmt.Errorf("ExportDataByTable query sub-tables failed: %w", err)
 			}
-			for _, taskRange := range tasks {
-				tr := taskRange
-				tb := tableName
-				producerWg.Add(1)
-				err := queryPool.Submit(func() {
-					defer producerWg.Done()
-					if ctx.Err() != nil {
-						return
-					}
-					if err := fetchDataInBatches(ctx, db, tb, stableName, tr.Start, tr.End, batchChan); err != nil {
-						log.Errorw("fetch data failed", "tb", tb, "error", err)
-					}
-				})
+			defer rows.Close()
+			for rows.Next() {
+				var subTableName string
+				var recordCount int
+				if err := rows.Scan(&subTableName, &recordCount); err != nil {
+					log.Errorw("ExportDataByTable row scan error", "error", err)
+					continue
+				}
+				tasks, err := buildFetchTasks(ctx, db, subTableName, tableName, tableType, isFull, log)
 				if err != nil {
-					producerWg.Done()
-					log.Errorw("ExportTablesByStable submit task failed", "error", err, "taskid", stableName+"_"+tableName+"_"+strconv.FormatInt(tr.Start, 10)+"-"+strconv.FormatInt(tr.End, 10))
+					log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
+					continue
+				}
+				for _, taskRange := range tasks {
+					tr := taskRange
+					tb := subTableName
+					producerWg.Add(1)
+					err := queryPool.Submit(func() {
+						defer producerWg.Done()
+						if ctx.Err() != nil {
+							return
+						}
+						if err := fetchDataInBatches(ctx, db, tb, tableName, tableType, tr.Start, tr.End, batchChan); err != nil {
+							log.Errorw("fetch data failed", "tb", tb, "error", err)
+						}
+					})
+					if err != nil {
+						producerWg.Done()
+						log.Errorw("ExportDataByTable submit task failed", "error", err, "taskid", tableName+"_"+tb+"_"+strconv.FormatInt(tr.Start, 10)+"-"+strconv.FormatInt(tr.End, 10))
+
+					}
+
+				}
+
+			}
+
+		} else {
+			rows, err := db.QueryContext(ctx, "SELECT COUNT(*) as record_count FROM ?", tableName)
+			if err != nil {
+				return fmt.Errorf("ExportDataByTable query table failed: %w", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var recordCount int
+				if err := rows.Scan(&recordCount); err != nil {
+					log.Errorw("ExportDataByTable row scan error", "error", err)
+					continue
+				}
+				if recordCount > 0 {
+					tasks, err := buildFetchTasks(ctx, db, tableName, tableName, tableType, isFull, log)
+					if err != nil {
+						log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
+						continue
+					}
+					for _, taskRange := range tasks {
+						tr := taskRange
+						tb := tableName
+						producerWg.Add(1)
+						err := queryPool.Submit(func() {
+							defer producerWg.Done()
+							if ctx.Err() != nil {
+								return
+							}
+							if err := fetchDataInBatches(ctx, db, tb, tb, tableType, tr.Start, tr.End, batchChan); err != nil {
+								log.Errorw("fetch data failed", "tb", tb, "error", err)
+							}
+						})
+						if err != nil {
+							producerWg.Done()
+							log.Errorw("ExportDataByTable submit task failed", "error", err, "taskid", tb+"_"+strconv.FormatInt(tr.Start, 10)+"-"+strconv.FormatInt(tr.End, 10))
+
+						}
+
+					}
 
 				}
 
 			}
 
 		}
+
 		producerWg.Wait()
 		return nil
 	})
 
 	if err := eg.Wait(); err != nil {
-		log.Errorw("ExportTablesByStable Export process terminated with error", "error", err, "taskid", stableName)
+		log.Errorw("ExportTablesByStable Export process terminated with error", "error", err, "taskid", tableName)
 		return err
 	}
 
-	log.Infow("ExportTablesByStable All export tasks completed successfully", "taskid", stableName)
+	log.Infow("ExportTablesByStable All export tasks completed successfully", "taskid", tableName)
 	return nil
 }
 
-func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableName string, start int64, end int64, batchChan chan<- RowBatch) error {
-	rows, err := db.QueryContext(ctx, "SELECT * FROM ? WHERE tbname = '?' AND ts between ? and ?", stableName, tbName, start, end)
-	if err != nil {
-		return fmt.Errorf("query failed for table %s: %v", tbName, err)
+func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, start int64, end int64, batchChan chan<- RowBatch) error {
+	var (
+		rows *sql.Rows
+	)
+	if tableType == 0 {
+		dbRows, err := db.QueryContext(ctx, "SELECT * FROM ? WHERE tbname = '?' AND ts between ? and ?", stableName, tbName, start, end)
+		if err != nil {
+			return fmt.Errorf("query failed for table %s: %v", tbName, err)
+		}
+		rows = dbRows
+	} else {
+		dbRows, err := db.QueryContext(ctx, "SELECT * FROM ? WHERE ts between ? and ?", tbName, start, end)
+		if err != nil {
+			return fmt.Errorf("query failed for table %s: %v", tbName, err)
+		}
+		rows = dbRows
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
@@ -234,7 +370,7 @@ func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableNa
 	return nil
 }
 
-func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName string, isFull bool, log *zap.SugaredLogger) ([]*TimeRange, error) {
+func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, isFull bool, log *zap.SugaredLogger) ([]*TimeRange, error) {
 	var (
 		startMs      int64
 		endMs        int64
@@ -243,10 +379,18 @@ func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName 
 	)
 	if isFull {
 		var t time.Time
-		err := db.QueryRowContext(ctx, "SELECT ts FROM ? WHERE tbname = '?'  ORDER BY ts limit 1", stableName, tbName).Scan(&t)
-		if err != nil {
-			log.Errorw("query tbName ts failed", "error", err, "tbName", tbName)
-			return tr, err
+		if tableType == 0 {
+			err := db.QueryRowContext(ctx, "SELECT ts FROM ? WHERE tbname = '?'  ORDER BY ts limit 1", stableName, tbName).Scan(&t)
+			if err != nil {
+				log.Errorw("query tbName ts failed", "error", err, "tbName", tbName)
+				return tr, err
+			}
+		} else {
+			err := db.QueryRowContext(ctx, "SELECT ts FROM ? ORDER BY ts limit 1", tbName).Scan(&t)
+			if err != nil {
+				log.Errorw("query tbName ts failed", "error", err, "tbName", tbName)
+				return tr, err
+			}
 		}
 		startMs = t.UnixMilli()
 		endMs = 0
