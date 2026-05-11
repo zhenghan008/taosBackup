@@ -52,6 +52,7 @@ go build -o taosBackup
 | `-m` | - | `e`                 | 运行模式：`e` 为备份模式，`i` 为恢复模式 |
 | `-s` | - | 空                   |指定超级表的名称，多个表名之间用逗号分隔，例如 stableNameA,stableNameB,... 或 stableNameA |
 | `-o` | - | 空                   |指定普通表的名称，多个表名用逗号分隔，例如 otableNameA,otableNameB,... 或 otableNameA |
+| `-P` | - | `M`                 |指定数据库的时间精度，其中M代表毫秒级，m代表微秒级，n代表纳秒级，这个必须根据数据库的实际情况指定，否则无法导出数据，默认是毫秒级 |
 ---
 
 ## 使用示例

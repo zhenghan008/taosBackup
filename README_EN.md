@@ -51,7 +51,7 @@ go build -o taosBackup
 | `-m` | - | `e` | Running mode: `e` for backup mode, `i` for restore mode |
 | `-s` | - | empty | Specify supertable name(s), separated by commas, e.g., stableNameA,stableNameB,... or stableNameA |
 | `-o` | - | empty | Specify regular table name(s), separated by commas, e.g., otableNameA,otableNameB,... or otableNameA |
-
+| `-P` | - | `M`                 |Specify the time precision for the database, where M represents milliseconds, m represents microseconds, and n represents nanoseconds. This must be specified according to the actual database; otherwise, data cannot be exported. The default is milliseconds. |
 ---
 
 ## Usage Examples

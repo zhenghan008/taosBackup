@@ -46,6 +46,20 @@ func fillMap(m map[string]int8, parts []string, val int8) {
 	}
 }
 
+var precisionMap = map[string]taos.TimestampPrecision{
+	"M": taos.PrecisionMillisecond,
+	"m": taos.PrecisionMicrosecond,
+	"n": taos.PrecisionNanosecond,
+}
+
+func ParseTimestampPrecisionMap(precisionStr string) (taos.TimestampPrecision, error) {
+	precision, exists := precisionMap[precisionStr]
+	if !exists {
+		return taos.PrecisionMillisecond, fmt.Errorf("invalid precision type: %q, only support 'M', 'm', 'n'", precisionStr)
+	}
+	return precision, nil
+}
+
 func main() {
 	consoleLogger := taos.Logger(false, true)
 	fileLogger := taos.Logger(true, false)
@@ -65,7 +79,13 @@ func main() {
 	model := flag.String("m", "e", "backup mode or recovery mode, where e stands for backup mode and i represents recovery mode, you must create a super table structure before using recovery mode.")
 	stables := flag.String("s", "", "specifies the name of the super tables,Multiple table names are separated by commas, e.g., stableNameA,stableNameB,... or stableNameA.")
 	otables := flag.String("o", "", "specifies the name of the Ordinary tables,Multiple table names are separated by commas,  e.g., otableNameA,otableNameB,... or otableNameA.")
+	timePrecision := flag.String("P", "M", "Specify the time precision for the database, where M represents milliseconds, m represents microseconds, and n represents nanoseconds. This must be specified according to the actual database; otherwise, data cannot be exported. The default is milliseconds.")
 	flag.Parse()
+	timestampPrecisionMap, err := ParseTimestampPrecisionMap(*timePrecision)
+	if err != nil {
+		consoleSugarLog.Errorw("Parse Timestamp Precision failed!", "error", err)
+		return
+	}
 	runtime.GOMAXPROCS(*limitWorker)
 	if err := os.MkdirAll(*backupPath, 0755); err != nil {
 		consoleSugarLog.Errorw("create backup path failed!", "error", err)
@@ -89,7 +109,7 @@ func main() {
 	}
 	specifiedTables := MergeStringsToMap(*stables, *otables)
 	if *model == "e" {
-		err = taos.ExportAllTables(taosDb, *taosDatabase, *limitWorker, *backupPath, *backupFull, *maxRowsCvs, specifiedTables, consoleSugarLog)
+		err = taos.ExportAllTables(taosDb, *taosDatabase, *limitWorker, *backupPath, *backupFull, *maxRowsCvs, specifiedTables, consoleSugarLog, timestampPrecisionMap)
 		if err != nil {
 			consoleSugarLog.Errorw("taos get stable table failed", "error", err)
 		}
