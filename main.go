@@ -127,7 +127,7 @@ func main() {
 
 	defer func() {
 		if err := taosDb.Close(); err != nil {
-			consoleSugarLog.Warnw("Close database error", "error", err)
+			consoleSugarLog.Errorw("Close database error", "error", err)
 		}
 	}()
 }
