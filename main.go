@@ -112,14 +112,17 @@ func main() {
 		err = taos.ExportAllTables(taosDb, *taosDatabase, *limitWorker, *backupPath, *backupFull, *maxRowsCvs, specifiedTables, consoleSugarLog, timestampPrecisionMap)
 		if err != nil {
 			consoleSugarLog.Errorw("taos get stable table failed", "error", err)
+			return
 		}
 	} else if *model == "i" {
 		err = taos.BatchImport(taosDb, *limitWorker, *backupPath, consoleSugarLog, fileSugarLog)
 		if err != nil {
 			consoleSugarLog.Errorw("taos import failed", "error", err)
+			return
 		}
 	} else {
 		consoleSugarLog.Errorw("model is invalid, only e or i", "model", *model)
+		return
 	}
 
 	defer func() {
