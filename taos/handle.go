@@ -457,11 +457,11 @@ func sequentialFileWriterRoutine(ctx context.Context, batchChan <-chan RowBatch,
 			csvWriter.Flush()
 			err := gzWriter.Close()
 			if err != nil {
-				return
+				log.Errorw("close gzWriter failed: %w", "error", err)
 			}
 			err = file.Close()
 			if err != nil {
-				return
+				log.Errorw("close file failed: %w", "error", err)
 			}
 		}
 	}()
