@@ -122,5 +122,9 @@ func main() {
 		consoleSugarLog.Errorw("model is invalid, only e or i", "model", *model)
 	}
 
-	defer taosDb.Close()
+	defer func() {
+		if err := taosDb.Close(); err != nil {
+			consoleSugarLog.Warnw("Close database error", "error", err)
+		}
+	}()
 }

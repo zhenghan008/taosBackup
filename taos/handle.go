@@ -103,7 +103,12 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 					if err != nil {
 						return err
 					}
-					defer rows.Close()
+					defer func(rows *sql.Rows) {
+						err := rows.Close()
+						if err != nil {
+							log.Warnw("Close database rows error", "error", err)
+						}
+					}(rows)
 					for rows.Next() {
 						var tableName string
 						if err := rows.Scan(&tableName); err != nil {
@@ -136,7 +141,12 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 					if err != nil {
 						return err
 					}
-					defer rows.Close()
+					defer func(rows *sql.Rows) {
+						err := rows.Close()
+						if err != nil {
+							log.Warnw("Close database rows error", "error", err)
+						}
+					}(rows)
 					for rows.Next() {
 						var tableName string
 						if err := rows.Scan(&tableName); err != nil {
@@ -199,7 +209,12 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 			if err != nil {
 				return fmt.Errorf("ExportDataByTable query sub-tables failed: %w", err)
 			}
-			defer rows.Close()
+			defer func(rows *sql.Rows) {
+				err := rows.Close()
+				if err != nil {
+					log.Warnw("Close database rows error", "error", err)
+				}
+			}(rows)
 			for rows.Next() {
 				var subTableName string
 				if err := rows.Scan(&subTableName); err != nil {
@@ -220,7 +235,7 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 						if ctx.Err() != nil {
 							return
 						}
-						if err := fetchDataInBatches(ctx, db, tb, tableName, tableType, tr.Start, tr.End, batchChan); err != nil {
+						if err := fetchDataInBatches(ctx, db, tb, tableName, tableType, tr.Start, tr.End, batchChan, log); err != nil {
 							log.Errorw("fetch data failed", "tb", tb, "error", err)
 						}
 					})
@@ -248,7 +263,7 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 					if ctx.Err() != nil {
 						return
 					}
-					if err := fetchDataInBatches(ctx, db, tb, tb, tableType, tr.Start, tr.End, batchChan); err != nil {
+					if err := fetchDataInBatches(ctx, db, tb, tb, tableType, tr.Start, tr.End, batchChan, log); err != nil {
 						log.Errorw("fetch data failed", "tb", tb, "error", err)
 					}
 				})
@@ -275,7 +290,7 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 	return nil
 }
 
-func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, start int64, end int64, batchChan chan<- RowBatch) error {
+func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, start int64, end int64, batchChan chan<- RowBatch, log *zap.SugaredLogger) error {
 	var (
 		rows *sql.Rows
 	)
@@ -292,7 +307,12 @@ func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableNa
 		}
 		rows = dbRows
 	}
-	defer rows.Close()
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			log.Warnw("Close database rows error", "error", err)
+		}
+	}(rows)
 	cols, _ := rows.Columns()
 	colCount := len(cols)
 	currentBatch := batchPool.Get().([]RowPackage)[:0]
@@ -409,8 +429,14 @@ func sequentialFileWriterRoutine(ctx context.Context, batchChan <-chan RowBatch,
 	rotate := func() error {
 		if csvWriter != nil {
 			csvWriter.Flush()
-			gzWriter.Close()
-			file.Close()
+			err := gzWriter.Close()
+			if err != nil {
+				return err
+			}
+			err = file.Close()
+			if err != nil {
+				return err
+			}
 		}
 		f, err := os.Create(filepath.Join(dirName, fmt.Sprintf("%s-%s_part%d.csv.gz", stableName, dateStr, fileIdx)))
 		if err != nil {
@@ -429,8 +455,14 @@ func sequentialFileWriterRoutine(ctx context.Context, batchChan <-chan RowBatch,
 	defer func() {
 		if csvWriter != nil {
 			csvWriter.Flush()
-			gzWriter.Close()
-			file.Close()
+			err := gzWriter.Close()
+			if err != nil {
+				return
+			}
+			err = file.Close()
+			if err != nil {
+				return
+			}
 		}
 	}()
 
@@ -589,13 +621,23 @@ func processSingleGzFile(ctx context.Context, filePath string, stableName string
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func(f *os.File) {
+			err := f.Close()
+			if err != nil {
+				consoleLog.Warnw("Close file  error", "error", err)
+			}
+		}(f)
 
 		gzReader, err := pgzip.NewReaderN(f, blockSize, 4)
 		if err != nil {
 			return err
 		}
-		defer gzReader.Close()
+		defer func(gzReader *pgzip.Reader) {
+			err := gzReader.Close()
+			if err != nil {
+				consoleLog.Warnw("gzReader close error", "error", err)
+			}
+		}(gzReader)
 		sqlBuf := bufferPool.Get().(*bytes.Buffer)
 		sqlBuf.Reset()
 		defer bufferPool.Put(sqlBuf)
