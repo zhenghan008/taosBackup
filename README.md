@@ -138,7 +138,7 @@ If the directory does not exist, the program will automatically create it.
 
 ### 📊 CSV Row Count Settings
 
-- For large datasets, recommend setting `-r` between 10000 ~ 500000
+- For large datasets, recommend setting `-r` between 500000 ~ 5000000
 - Too large causes single files to become unwieldy
 - Too small generates many small files, increasing storage and processing overhead
 
