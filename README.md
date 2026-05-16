@@ -1,4 +1,4 @@
-[中文版本](./README_CN) | English
+[中文版本](./README_CN.md) | English
 # TDengine Database Backup and Restore Tool
 
 A powerful backup and restore tool for TDengine (Taos Time-Series Database), supporting full backup, incremental backup, and data recovery.

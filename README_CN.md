@@ -1,7 +1,7 @@
 
 
 # TDengine 数据库备份恢复工具
-[English](./README) | 中文
+[English](./README.md) | 中文
 
 一款功能强大的 TDengine（涛思数据库）备份和恢复工具，支持全量备份、增量备份、数据恢复等功能。
 
