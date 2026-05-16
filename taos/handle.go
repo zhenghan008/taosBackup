@@ -61,7 +61,7 @@ var (
 )
 
 // ExportAllTables Export all data
-func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string, isFull bool, toCsvRows int, specifiedTables map[string]int8, log *zap.SugaredLogger, timePrecision TimestampPrecision) error {
+func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string, isFull bool, toCsvRows int, specifiedTables map[string]int8, log *zap.SugaredLogger, timePrecision TimestampPrecision, intervalDays int) error {
 	eg, ctx := errgroup.WithContext(context.Background())
 	start := time.Now()
 	globalQueryPool, _ := ants.NewPool(limitCores*4, ants.WithPreAlloc(true))
@@ -81,7 +81,7 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 				if ctx.Err() != nil {
 					return
 				}
-				err := ExportDataByTable(ctx, db, globalQueryPool, tb, ty, workPath, isFull, toCsvRows, log, timePrecision)
+				err := ExportDataByTable(ctx, db, globalQueryPool, tb, ty, workPath, isFull, toCsvRows, log, timePrecision, intervalDays)
 				if err != nil {
 					log.Errorw("ExportAllTables export error", "error", err, "stables", tb)
 					return
@@ -121,7 +121,7 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 							if ctx.Err() != nil {
 								return
 							}
-							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(0), workPath, isFull, toCsvRows, log, timePrecision)
+							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(0), workPath, isFull, toCsvRows, log, timePrecision, intervalDays)
 							if err != nil {
 								log.Errorw("ExportAllTables export error", "error", err, "stables", tableName)
 							}
@@ -159,7 +159,7 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 							if ctx.Err() != nil {
 								return
 							}
-							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(1), workPath, isFull, toCsvRows, log, timePrecision)
+							err := ExportDataByTable(ctx, db, globalQueryPool, tableName, int8(1), workPath, isFull, toCsvRows, log, timePrecision, intervalDays)
 							if err != nil {
 								log.Errorw("ExportAllTables export error", "error", err, "stables", tableName)
 							}
@@ -191,7 +191,7 @@ func ExportAllTables(db *sql.DB, dbName string, limitCores int, workPath string,
 
 }
 
-func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, tableName string, tableType int8, workPath string, isFull bool, toCsvRows int, log *zap.SugaredLogger, timePrecision TimestampPrecision) error {
+func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, tableName string, tableType int8, workPath string, isFull bool, toCsvRows int, log *zap.SugaredLogger, timePrecision TimestampPrecision, intervalDays int) error {
 	batchChan := make(chan RowBatch, batchSize/10)
 	eg, _ := errgroup.WithContext(context.Background())
 
@@ -221,7 +221,7 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 					log.Errorw("ExportDataByTable row scan error", "error", err)
 					continue
 				}
-				tasks, err := buildFetchTasks(ctx, db, subTableName, tableName, tableType, isFull, log, timePrecision)
+				tasks, err := buildFetchTasks(ctx, db, subTableName, tableName, tableType, isFull, log, timePrecision, intervalDays)
 				if err != nil {
 					log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
 					continue
@@ -250,7 +250,7 @@ func ExportDataByTable(ctx context.Context, db *sql.DB, queryPool *ants.Pool, ta
 			}
 
 		} else {
-			tasks, err := buildFetchTasks(ctx, db, tableName, tableName, tableType, isFull, log, timePrecision)
+			tasks, err := buildFetchTasks(ctx, db, tableName, tableName, tableType, isFull, log, timePrecision, intervalDays)
 			if err != nil {
 				log.Errorw("ExportDataByTable build tasks failed: %w", "error", err)
 			}
@@ -372,12 +372,11 @@ func fetchDataInBatches(ctx context.Context, db *sql.DB, tbName string, stableNa
 	return nil
 }
 
-func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, isFull bool, log *zap.SugaredLogger, timePrecision TimestampPrecision) ([]*TimeRange, error) {
+func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName string, tableType int8, isFull bool, log *zap.SugaredLogger, timePrecision TimestampPrecision, intervalDays int) ([]*TimeRange, error) {
 	var (
-		startMs      int64
-		endMs        int64
-		intervalDays int
-		tr           []*TimeRange
+		startMs int64
+		endMs   int64
+		tr      []*TimeRange
 	)
 	if isFull {
 		var t time.Time
@@ -396,14 +395,12 @@ func buildFetchTasks(ctx context.Context, db *sql.DB, tbName string, stableName 
 		}
 		startMs = t.UnixMilli()
 		endMs = 0
-		intervalDays = 3
 	} else {
 		now := time.Now().UnixMilli()
 		t := time.UnixMilli(now)
 		lastDay := time.Date(t.Year(), t.Month(), t.Day()-1, 0, 0, 0, 0, t.Location())
 		startMs = lastDay.UnixMilli()
 		endMs = now
-		intervalDays = 1
 	}
 	tr = SplitTimeRangeByDay(startMs, endMs, intervalDays, timePrecision)
 	return tr, nil

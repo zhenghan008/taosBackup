@@ -80,6 +80,7 @@ func main() {
 	stables := flag.String("s", "", "specifies the name of the super tables,Multiple table names are separated by commas, e.g., stableNameA,stableNameB,... or stableNameA.")
 	otables := flag.String("o", "", "specifies the name of the Ordinary tables,Multiple table names are separated by commas,  e.g., otableNameA,otableNameB,... or otableNameA.")
 	timePrecision := flag.String("P", "M", "Specify the time precision for the database, where M represents milliseconds, m represents microseconds, and n represents nanoseconds. This must be specified according to the actual database; otherwise, data cannot be exported. The default is milliseconds.")
+	intervalDays := flag.Int("i", 1, "Setting the interval in days determines the step size for exporting data. For a full backup, this interval indicates how many days will be used to export the data in stages. For an incremental backup, it means only the data within the specified interval will be exported.")
 	flag.Parse()
 	timestampPrecisionMap, err := ParseTimestampPrecisionMap(*timePrecision)
 	if err != nil {
@@ -109,7 +110,7 @@ func main() {
 	}
 	specifiedTables := MergeStringsToMap(*stables, *otables)
 	if *model == "e" {
-		err = taos.ExportAllTables(taosDb, *taosDatabase, *limitWorker, *backupPath, *backupFull, *maxRowsCvs, specifiedTables, consoleSugarLog, timestampPrecisionMap)
+		err = taos.ExportAllTables(taosDb, *taosDatabase, *limitWorker, *backupPath, *backupFull, *maxRowsCvs, specifiedTables, consoleSugarLog, timestampPrecisionMap, *intervalDays)
 		if err != nil {
 			consoleSugarLog.Errorw("taos get stable table failed", "error", err)
 			return
